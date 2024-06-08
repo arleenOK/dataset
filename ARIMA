@@ -1,0 +1,123 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.stattools import acf, pacf
+
+
+# Загрузка данных
+df = pd.read_csv('https://raw.githubusercontent.com/arleenOK/dataset/main/nvda_close_data.csv', names=['value'], header=0)
+y = df.value
+
+# Преобразование данных для стационарности
+def test_stationarity(timeseries):
+    rolmean = timeseries.rolling(window=12).mean()
+    rolstd = timeseries.rolling(window=12).std()
+
+    # График скользящего среднего и стандартного отклонения
+    plt.figure(figsize=(14, 7))
+    plt.plot(timeseries, color='blue', label='Оригинал')
+    plt.plot(rolmean, color='red', label='Скользящее среднее')
+    plt.plot(rolstd, color='black', label='Скользящее стандартное отклонение')
+    plt.legend(loc='best')
+    plt.title('Скользящее среднее значение и стандартное отклонение')
+    plt.show(block=False)
+
+    # Тест Дикки-Фуллера
+    print('Результаты теста Дики-Фуллера:')
+    dftest = adfuller(timeseries, autolag='AIC')
+    dfoutput = pd.Series(dftest[0:4], index=['Тестовая статистика', 'p-значение', '#Используемые задержки', 'Количество использованных наблюдений'])
+    for key, value in dftest[4].items():
+        dfoutput['Критическое значение (%s)' % key] = value
+    print(dfoutput)
+
+test_stationarity(y)
+
+# Дифференцирование для стационарности
+y_diff = y.diff().dropna()
+test_stationarity(y_diff)
+
+# Определение значений p и q
+def plot_acf_pacf(y, lags=20):
+    lag_acf = acf(y, nlags=lags)
+    lag_pacf = pacf(y, nlags=lags, method='ols')
+
+    plt.figure(figsize=(14,7))
+
+    plt.subplot(121)
+    plt.plot(lag_acf)
+    plt.axhline(y=0, linestyle='--', color='gray')
+    plt.axhline(y=-1.96/np.sqrt(len(y)), linestyle='--', color='gray')
+    plt.axhline(y=1.96/np.sqrt(len(y)), linestyle='--', color='gray')
+    plt.title('Автокорреляционная функция')
+
+    plt.subplot(122)
+    plt.plot(lag_pacf)
+    plt.axhline(y=0, linestyle='--', color='gray')
+    plt.axhline(y=-1.96/np.sqrt(len(y)), linestyle='--', color='gray')
+    plt.axhline(y=1.96/np.sqrt(len(y)), linestyle='--', color='gray')
+    plt.title('Частичная автокорреляционная функция')
+
+    plt.tight_layout()
+    plt.show()
+
+plot_acf_pacf(y_diff)
+
+# Подбор модели ARIMA
+def evaluate_arima_model(y, arima_order):
+    model = ARIMA(y, order=arima_order)
+    model_fit = model.fit()
+    aic = model_fit.aic
+    return aic
+
+def find_best_arima_model(y, p_values, d_values, q_values):
+    best_aic = float("inf")
+    best_order = None
+    best_model = None
+    for p in p_values:
+        for d in d_values:
+            for q in q_values:
+                try:
+                    aic = evaluate_arima_model(y, (p,d,q))
+                    if aic < best_aic:
+                        best_aic = aic
+                        best_order = (p,d,q)
+                        best_model = ARIMA(y, order=(p,d,q)).fit()
+                except Exception as e:
+                    continue
+    return best_order, best_model
+
+p_values = range(0, 5)
+d_values = range(0, 2)
+q_values = range(0, 5)
+best_order, best_model = find_best_arima_model(y, p_values, d_values, q_values)
+
+print(f'Лучшие значения ARIMA {best_order}')
+print(best_model.summary())
+
+# Прогнозирование
+forecast_steps = 3
+forecast_results = best_model.get_forecast(steps=forecast_steps)
+forecast = forecast_results.predicted_mean
+conf_int = forecast_results.conf_int(alpha=0.05)
+
+# Вывод прогнозируемых цен на экран
+print("Прогнозируемые цены:")
+for i, value in enumerate(forecast, 1):
+    print(f"День {i}: {value}")
+
+# Вывод доверительных интервалов на экран
+print("\nДоверительные интервалы:")
+for i, (lower, upper) in enumerate(conf_int.itertuples(index=False), 1):
+    print(f"День {i}: ({lower}, {upper})")
+
+# График прогноза
+plt.figure(figsize=(14, 7))
+plt.plot(y, label='Исторические данные')
+plt.plot(range(len(y), len(y) + forecast_steps), forecast, label='Прогноз', color='red')
+plt.fill_between(range(len(y), len(y) + forecast_steps), conf_int.iloc[:, 0], conf_int.iloc[:, 1], color='pink', alpha=0.3)
+plt.legend(loc='best')
+plt.title('Прогноз цен на акции')
+plt.show()
